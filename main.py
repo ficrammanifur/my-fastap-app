@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -7,7 +7,12 @@ import uuid
 import random
 import os
 import pyfiglet
+import logging
 from typing import Dict, List
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -42,11 +47,18 @@ async def root():
 async def health():
     return {"status": "healthy", "rooms": len(rooms)}
 
+@app.get("/debug/rooms")
+async def debug_rooms():
+    """Debug endpoint to list all rooms"""
+    return {"rooms": list(rooms.keys())}
+
 @app.post("/create-room")
 async def create_room(request: CreateRoomRequest):
     """Buat room baru"""
+    logger.info(f"Create room request: {request}")
     player_name = request.player_name
     if not player_name.strip():
+        logger.error("Player name is empty")
         return {"error": "Player name cannot be empty"}, 422
     
     room_id = str(uuid.uuid4())[:8].upper()
@@ -62,6 +74,7 @@ async def create_room(request: CreateRoomRequest):
     
     rooms[room_id] = room_data
     connections[room_id] = []
+    logger.info(f"Room created: {room_id}")
     
     return {
         "room_id": room_id,
@@ -70,20 +83,30 @@ async def create_room(request: CreateRoomRequest):
     }
 
 @app.post("/join-room")
-async def join_room(request: JoinRoomRequest):
+async def join_room(request: JoinRoomRequest, raw_request: Request):
     """Join room yang sudah ada"""
-    room_id = request.room_id.upper()  # Ensure room_id is uppercase
+    logger.info(f"Join room request: {request}")
+    try:
+        body = await raw_request.json()
+        logger.info(f"Raw request body: {body}")
+    except:
+        logger.error("Failed to parse request body")
+    
+    room_id = request.room_id.upper()
     player_name = request.player_name
     
     if not room_id.strip() or not player_name.strip():
-        return {"error": "Room ID and player name cannot be empty"}, 422
+        logger.error(f"Invalid input: room_id={room_id}, player_name={player_name}")
+        return {"detail": "Room ID and player name cannot be empty"}, 422
     
     if room_id not in rooms:
-        return {"error": "Room not found"}, 404
+        logger.error(f"Room not found: {room_id}")
+        return {"detail": "Room not found"}, 404
     
     room = rooms[room_id]
     if len(room["players"]) >= room["max_players"]:
-        return {"error": "Room full"}, 400
+        logger.error(f"Room full: {room_id}")
+        return {"detail": "Room full"}, 400
     
     colors = ["red", "blue", "green", "yellow"]
     player_color = colors[len(room["players"])]
@@ -96,6 +119,7 @@ async def join_room(request: JoinRoomRequest):
     }
     
     room["players"].append(new_player)
+    logger.info(f"Player {player_name} joined room {room_id}")
     
     return {
         "room_id": room_id,
@@ -106,22 +130,22 @@ async def join_room(request: JoinRoomRequest):
 @app.get("/room/{room_id}")
 async def get_room(room_id: str):
     """Get info room"""
-    room_id = room_id.upper()  # Ensure room_id is uppercase
+    room_id = room_id.upper()
     if room_id not in rooms:
-        return {"error": "Room not found"}, 404
+        logger.error(f"Room not found: {room_id}")
+        return {"detail": "Room not found"}, 404
     return {"room": rooms[room_id]}
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str):
     await websocket.accept()
     
-    room_id = room_id.upper()  # Ensure room_id is uppercase
+    room_id = room_id.upper()
     if room_id not in connections:
         connections[room_id] = []
     connections[room_id].append(websocket)
     
     try:
-        # Kirim room state saat connect
         if room_id in rooms:
             await websocket.send_text(json.dumps({
                 "type": "room_update",
@@ -129,11 +153,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
             }))
         
         while True:
-            # Terima pesan dari client
             data = await websocket.receive_text()
             message = json.loads(data)
+            logger.info(f"WebSocket message received in room {room_id}: {message}")
             
-            # Handle actions
             if message["action"] == "start_game":
                 if room_id in rooms and len(rooms[room_id]["players"]) >= 2:
                     rooms[room_id]["game_state"] = "playing"
@@ -148,11 +171,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     dice_result = random.randint(1, 6)
                     room["dice_result"] = dice_result
                     
-                    # Update posisi player (simplified)
                     current_player = room["players"][room["current_turn"]]
                     current_player["position"] = min(current_player["position"] + dice_result, 100)
                     
-                    # Next turn
                     room["current_turn"] = (room["current_turn"] + 1) % len(room["players"])
                     
                     await broadcast_to_room(room_id, {
@@ -164,6 +185,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     except WebSocketDisconnect:
         if websocket in connections[room_id]:
             connections[room_id].remove(websocket)
+        logger.info(f"WebSocket disconnected from room {room_id}")
 
 async def broadcast_to_room(room_id: str, message: dict):
     """Broadcast pesan ke semua client di room"""
@@ -177,11 +199,11 @@ async def broadcast_to_room(room_id: str, message: dict):
         except:
             disconnected.append(websocket)
     
-    # Remove disconnected websockets
     for ws in disconnected:
         connections[room_id].remove(ws)
+        logger.info(f"Removed disconnected WebSocket from room {room_id}")
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))  # Use Railway's PORT or default to 8000
+    port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
