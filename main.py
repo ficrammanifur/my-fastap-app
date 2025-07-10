@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 import json
 import uuid
 import random
@@ -23,6 +24,10 @@ app.add_middleware(
 rooms = {}
 connections = {}
 
+# Pydantic model for create-room request
+class CreateRoomRequest(BaseModel):
+    player_name: str
+
 @app.get("/")
 async def root():
     # Generating ASCII art for "Ludo Backend Running"
@@ -34,8 +39,12 @@ async def health():
     return {"status": "healthy", "rooms": len(rooms)}
 
 @app.post("/create-room")
-async def create_room(player_name: str):
+async def create_room(request: CreateRoomRequest):
     """Buat room baru"""
+    player_name = request.player_name
+    if not player_name.strip():
+        return {"error": "Player name cannot be empty"}, 422
+    
     room_id = str(uuid.uuid4())[:8].upper()
     
     room_data = {
