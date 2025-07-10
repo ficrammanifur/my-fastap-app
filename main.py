@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 import json
 import uuid
 import random
@@ -26,7 +27,7 @@ connections = {}
 async def root():
     # Generating ASCII art for "Ludo Backend Running"
     ascii_art = pyfiglet.figlet_format("Ludo Backend Running", font="slant")
-    return {"message": ascii_art, "status": "running"}
+    return PlainTextResponse(ascii_art + "\nStatus: running")
 
 @app.get("/health")
 async def health():
