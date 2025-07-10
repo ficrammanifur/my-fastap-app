@@ -37,6 +37,10 @@ class JoinRoomRequest(BaseModel):
     room_id: str
     player_name: str
 
+class MovePieceRequest(BaseModel):
+    piece_id: str
+    dice_result: int
+
 @app.get("/")
 async def root():
     # Generating ASCII art for "Ludo Backend Running"
@@ -59,13 +63,23 @@ async def create_room(request: CreateRoomRequest):
     player_name = request.player_name
     if not player_name.strip():
         logger.error("Player name is empty")
-        return {"error": "Player name cannot be empty"}, 422
+        return {"detail": "Player name cannot be empty"}, 422
     
     room_id = str(uuid.uuid4())[:8].upper()
     
     room_data = {
         "id": room_id,
-        "players": [{"id": str(uuid.uuid4()), "name": player_name, "color": "red", "position": 0}],
+        "players": [{
+            "id": str(uuid.uuid4()),
+            "name": player_name,
+            "color": "red",
+            "pieces": [
+                {"id": f"{player_name}-r1", "position": "home", "index": 0, "home": True},
+                {"id": f"{player_name}-r2", "position": "home", "index": 0, "home": True},
+                {"id": f"{player_name}-r3", "position": "home", "index": 0, "home": True},
+                {"id": f"{player_name}-r4", "position": "home", "index": 0, "home": True},
+            ],
+        }],
         "current_turn": 0,
         "game_state": "waiting",
         "dice_result": None,
@@ -115,7 +129,12 @@ async def join_room(request: JoinRoomRequest, raw_request: Request):
         "id": str(uuid.uuid4()),
         "name": player_name,
         "color": player_color,
-        "position": 0
+        "pieces": [
+            {"id": f"{player_name}-{player_color}1", "position": "home", "index": 0, "home": True},
+            {"id": f"{player_name}-{player_color}2", "position": "home", "index": 0, "home": True},
+            {"id": f"{player_name}-{player_color}3", "position": "home", "index": 0, "home": True},
+            {"id": f"{player_name}-{player_color}4", "position": "home", "index": 0, "home": True},
+        ],
     }
     
     room["players"].append(new_player)
@@ -171,14 +190,49 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     dice_result = random.randint(1, 6)
                     room["dice_result"] = dice_result
                     
-                    current_player = room["players"][room["current_turn"]]
-                    current_player["position"] = min(current_player["position"] + dice_result, 100)
-                    
-                    room["current_turn"] = (room["current_turn"] + 1) % len(room["players"])
-                    
                     await broadcast_to_room(room_id, {
                         "type": "dice_rolled",
                         "dice": dice_result,
+                        "room": room
+                    })
+            
+            elif message["action"] == "move_piece":
+                if room_id in rooms:
+                    room = rooms[room_id]
+                    current_player = room["players"][room["current_turn"]]
+                    if current_player["id"] == message["player_id"]:
+                        piece_id = message["piece_id"]
+                        dice_result = room["dice_result"]
+                        piece = next((p for p in current_player["pieces"] if p["id"] == piece_id), None)
+                        if piece:
+                            start_pos = {"red": 1, "blue": 40, "green": 14, "yellow": 27}
+                            safe_squares = [1, 9, 14, 22, 27, 35, 40, 48]
+                            home_entry = 51
+                            if piece["home"] and dice_result == 6:
+                                piece["position"] = start_pos[current_player["color"]]
+                                piece["index"] = start_pos[current_player["color"]]
+                                piece["home"] = False
+                            elif not piece["home"]:
+                                new_index = (piece["index"] + dice_result) % 52 if piece["index"] + dice_result <= home_entry else piece["index"] + dice_result
+                                piece["position"] = new_index if new_index <= home_entry else "rf" + new_index if current_player["color"] == "red" else "bf" + new_index if current_player["color"] == "blue" else "gf" + new_index if current_player["color"] == "green" else "yf" + new_index
+                                piece["index"] = new_index
+                                # Check for captures
+                                if piece["index"] not in safe_squares and piece["index"] <= home_entry:
+                                    for opponent in room["players"]:
+                                        if opponent["id"] != current_player["id"]:
+                                            for opp_piece in opponent["pieces"]:
+                                                if opp_piece["index"] == piece["index"] and not opp_piece["home"]:
+                                                    opp_piece["index"] = 0
+                                                    opp_piece["position"] = "home"
+                                                    opp_piece["home"] = True
+                                                    # Grant extra turn
+                                                    room["current_turn"] = (room["current_turn"] - 1) % len(room["players"])
+                    
+                    room["current_turn"] = (room["current_turn"] + 1) % len(room["players"]) if dice_result != 6 else room["current_turn"]
+                    room["dice_result"] = None
+                    
+                    await broadcast_to_room(room_id, {
+                        "type": "piece_moved",
                         "room": room
                     })
     
