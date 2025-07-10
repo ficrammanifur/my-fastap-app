@@ -86,6 +86,10 @@ async def get_room(room_id: str):
         return {"error": "Room not found"}, 404
     return {"room": rooms[room_id]}
 
+@app.get("/")
+async def root():
+    return {"message": "Hello from Railway!"}
+
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str):
     await websocket.accept()
