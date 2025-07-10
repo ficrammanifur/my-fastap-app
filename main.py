@@ -16,20 +16,20 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Adding CORS middleware for specific origins
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://ficrammanifur.github.io"],
+    allow_origins=["https://ficrammanifur.github.io", "http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # In-memory storage
-rooms = {}
-connections = {}
+rooms: Dict[str, dict] = {}
+connections: Dict[str, List[WebSocket]] = {}
 
-# Pydantic models for request validation
+# Pydantic models
 class CreateRoomRequest(BaseModel):
     player_name: str
 
@@ -37,13 +37,8 @@ class JoinRoomRequest(BaseModel):
     room_id: str
     player_name: str
 
-class MovePieceRequest(BaseModel):
-    piece_id: str
-    dice_result: int
-
 @app.get("/")
 async def root():
-    # Generating ASCII art for "Ludo Backend Running"
     ascii_art = pyfiglet.figlet_format("Ludo Backend Running", font="slant")
     return PlainTextResponse(ascii_art + "\nStatus: running")
 
@@ -53,20 +48,17 @@ async def health():
 
 @app.get("/debug/rooms")
 async def debug_rooms():
-    """Debug endpoint to list all rooms"""
     return {"rooms": list(rooms.keys())}
 
 @app.post("/create-room")
 async def create_room(request: CreateRoomRequest):
-    """Buat room baru"""
     logger.info(f"Create room request: {request}")
-    player_name = request.player_name
-    if not player_name.strip():
+    player_name = request.player_name.strip()
+    if not player_name:
         logger.error("Player name is empty")
         return {"detail": "Player name cannot be empty"}, 422
     
     room_id = str(uuid.uuid4())[:8].upper()
-    
     room_data = {
         "id": room_id,
         "players": [{
@@ -98,18 +90,11 @@ async def create_room(request: CreateRoomRequest):
 
 @app.post("/join-room")
 async def join_room(request: JoinRoomRequest, raw_request: Request):
-    """Join room yang sudah ada"""
     logger.info(f"Join room request: {request}")
-    try:
-        body = await raw_request.json()
-        logger.info(f"Raw request body: {body}")
-    except:
-        logger.error("Failed to parse request body")
+    room_id = request.room_id.upper().strip()
+    player_name = request.player_name.strip()
     
-    room_id = request.room_id.upper()
-    player_name = request.player_name
-    
-    if not room_id.strip() or not player_name.strip():
+    if not room_id or not player_name:
         logger.error(f"Invalid input: room_id={room_id}, player_name={player_name}")
         return {"detail": "Room ID and player name cannot be empty"}, 422
     
@@ -140,6 +125,11 @@ async def join_room(request: JoinRoomRequest, raw_request: Request):
     room["players"].append(new_player)
     logger.info(f"Player {player_name} joined room {room_id}")
     
+    await broadcast_to_room(room_id, {
+        "type": "room_update",
+        "room": room
+    })
+    
     return {
         "room_id": room_id,
         "player_id": new_player["id"],
@@ -148,7 +138,6 @@ async def join_room(request: JoinRoomRequest, raw_request: Request):
 
 @app.get("/room/{room_id}")
 async def get_room(room_id: str):
-    """Get info room"""
     room_id = room_id.upper()
     if room_id not in rooms:
         logger.error(f"Room not found: {room_id}")
@@ -187,14 +176,15 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
             elif message["action"] == "roll_dice":
                 if room_id in rooms:
                     room = rooms[room_id]
-                    dice_result = random.randint(1, 6)
-                    room["dice_result"] = dice_result
-                    
-                    await broadcast_to_room(room_id, {
-                        "type": "dice_rolled",
-                        "dice": dice_result,
-                        "room": room
-                    })
+                    current_player = room["players"][room["current_turn"]]
+                    if current_player["id"] == message["player_id"]:
+                        dice_result = random.randint(1, 6)
+                        room["dice_result"] = dice_result
+                        await broadcast_to_room(room_id, {
+                            "type": "dice_rolled",
+                            "dice": dice_result,
+                            "room": room
+                        })
             
             elif message["action"] == "move_piece":
                 if room_id in rooms:
@@ -208,15 +198,28 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                             start_pos = {"red": 1, "blue": 40, "green": 14, "yellow": 27}
                             safe_squares = [1, 9, 14, 22, 27, 35, 40, 48]
                             home_entry = 51
+                            final_home = 57
+                            extra_turn = False
+
                             if piece["home"] and dice_result == 6:
                                 piece["position"] = start_pos[current_player["color"]]
                                 piece["index"] = start_pos[current_player["color"]]
                                 piece["home"] = False
+                                extra_turn = True
                             elif not piece["home"]:
                                 new_index = (piece["index"] + dice_result) % 52 if piece["index"] + dice_result <= home_entry else piece["index"] + dice_result
-                                piece["position"] = new_index if new_index <= home_entry else "rf" + new_index if current_player["color"] == "red" else "bf" + new_index if current_player["color"] == "blue" else "gf" + new_index if current_player["color"] == "green" else "yf" + new_index
+                                if new_index > final_home:
+                                    new_index = final_home
+                                piece["position"] = (
+                                    str(new_index) if new_index <= home_entry else
+                                    f"rf{new_index}" if current_player["color"] == "red" else
+                                    f"bf{new_index}" if current_player["color"] == "blue" else
+                                    f"gf{new_index}" if current_player["color"] == "green" else
+                                    f"yf{new_index}"
+                                )
                                 piece["index"] = new_index
-                                # Check for captures
+                                if piece["index"] == final_home:
+                                    extra_turn = True
                                 if piece["index"] not in safe_squares and piece["index"] <= home_entry:
                                     for opponent in room["players"]:
                                         if opponent["id"] != current_player["id"]:
@@ -225,16 +228,23 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                                                     opp_piece["index"] = 0
                                                     opp_piece["position"] = "home"
                                                     opp_piece["home"] = True
-                                                    # Grant extra turn
-                                                    room["current_turn"] = (room["current_turn"] - 1) % len(room["players"])
-                    
-                    room["current_turn"] = (room["current_turn"] + 1) % len(room["players"]) if dice_result != 6 else room["current_turn"]
-                    room["dice_result"] = None
-                    
-                    await broadcast_to_room(room_id, {
-                        "type": "piece_moved",
-                        "room": room
-                    })
+                                                    extra_turn = True
+                            
+                            if all(p["index"] == final_home for p in current_player["pieces"]):
+                                room["game_state"] = "finished"
+                                await broadcast_to_room(room_id, {
+                                    "type": "game_won",
+                                    "winner": current_player["name"],
+                                    "room": room
+                                })
+                            
+                            room["current_turn"] = room["current_turn"] if dice_result == 6 or extra_turn else (room["current_turn"] + 1) % len(room["players"])
+                            room["dice_result"] = None
+                            
+                            await broadcast_to_room(room_id, {
+                                "type": "piece_moved",
+                                "room": room
+                            })
     
     except WebSocketDisconnect:
         if websocket in connections[room_id]:
@@ -242,7 +252,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
         logger.info(f"WebSocket disconnected from room {room_id}")
 
 async def broadcast_to_room(room_id: str, message: dict):
-    """Broadcast pesan ke semua client di room"""
     if room_id not in connections:
         return
     
