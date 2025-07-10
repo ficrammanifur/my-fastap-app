@@ -24,8 +24,12 @@ app.add_middleware(
 rooms = {}
 connections = {}
 
-# Pydantic model for create-room request
+# Pydantic models for request validation
 class CreateRoomRequest(BaseModel):
+    player_name: str
+
+class JoinRoomRequest(BaseModel):
+    room_id: str
     player_name: str
 
 @app.get("/")
@@ -66,8 +70,14 @@ async def create_room(request: CreateRoomRequest):
     }
 
 @app.post("/join-room")
-async def join_room(room_id: str, player_name: str):
+async def join_room(request: JoinRoomRequest):
     """Join room yang sudah ada"""
+    room_id = request.room_id.upper()  # Ensure room_id is uppercase
+    player_name = request.player_name
+    
+    if not room_id.strip() or not player_name.strip():
+        return {"error": "Room ID and player name cannot be empty"}, 422
+    
     if room_id not in rooms:
         return {"error": "Room not found"}, 404
     
@@ -96,6 +106,7 @@ async def join_room(room_id: str, player_name: str):
 @app.get("/room/{room_id}")
 async def get_room(room_id: str):
     """Get info room"""
+    room_id = room_id.upper()  # Ensure room_id is uppercase
     if room_id not in rooms:
         return {"error": "Room not found"}, 404
     return {"room": rooms[room_id]}
@@ -104,6 +115,7 @@ async def get_room(room_id: str):
 async def websocket_endpoint(websocket: WebSocket, room_id: str):
     await websocket.accept()
     
+    room_id = room_id.upper()  # Ensure room_id is uppercase
     if room_id not in connections:
         connections[room_id] = []
     connections[room_id].append(websocket)
