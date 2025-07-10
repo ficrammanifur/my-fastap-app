@@ -3,26 +3,30 @@ from fastapi.middleware.cors import CORSMiddleware
 import json
 import uuid
 import random
+import os
+import pyfiglet
 from typing import Dict, List
 
 app = FastAPI()
 
-# CORS untuk GitHub Pages
+# Adding CORS middleware for specific origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Untuk production, ganti dengan domain spesifik
+    allow_origins=["https://ficrammanifur.github.io"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Storage sederhana (in-memory)
+# In-memory storage
 rooms = {}
 connections = {}
 
 @app.get("/")
 async def root():
-    return {"message": "Hello from Railway!", "status": "Ludo Backend Running"}
+    # Generating ASCII art for "Ludo Backend Running"
+    ascii_art = pyfiglet.figlet_format("Ludo Backend Running", font="slant")
+    return {"message": ascii_art, "status": "running"}
 
 @app.get("/health")
 async def health():
@@ -85,10 +89,6 @@ async def get_room(room_id: str):
     if room_id not in rooms:
         return {"error": "Room not found"}, 404
     return {"room": rooms[room_id]}
-
-@app.get("/")
-async def root():
-    return {"message": "Hello from Railway!"}
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str):
@@ -161,4 +161,5 @@ async def broadcast_to_room(room_id: str, message: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))  # Use Railway's PORT or default to 8000
+    uvicorn.run(app, host="0.0.0.0", port=port)
